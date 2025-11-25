@@ -1,0 +1,5 @@
+{
+  "name": "Tounes Check - AI Fact Checker",
+  "description": "Un assistant intelligent pour vérifier les informations et rumeurs en Tunisie en utilisant Google Gemini et la recherche en temps réel.",
+  "requestFramePermissions": []
+}

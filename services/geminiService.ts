@@ -35,51 +35,73 @@ Règles importantes :
 5. Sois objectif, factuel et précis.
 `;
 
+// Fonction utilitaire pour attendre (sleep)
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
 export const checkFactWithGemini = async (query: string): Promise<FactCheckResult> => {
-  try {
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: `Vérifie cette information ou ce lien : ${query}`,
-      config: {
-        systemInstruction: SYSTEM_INSTRUCTION,
-        tools: [{ googleSearch: {} }],
-        // responseMimeType cannot be JSON when using tools, so we parse manually
-      },
-    });
+  const maxRetries = 3;
+  let attempt = 0;
 
-    const text = response.text;
-    
-    // Attempt to extract JSON from the text response
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      throw new Error("Le modèle n'a pas retourné un JSON valide.");
+  while (attempt < maxRetries) {
+    try {
+      const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: `Vérifie cette information ou ce lien : ${query}`,
+        config: {
+          systemInstruction: SYSTEM_INSTRUCTION,
+          tools: [{ googleSearch: {} }],
+        },
+      });
+
+      const text = response.text;
+      
+      // Attempt to extract JSON from the text response
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        throw new Error("Le modèle n'a pas retourné un JSON valide.");
+      }
+
+      const result: FactCheckResult = JSON.parse(jsonMatch[0]);
+
+      // Enhance sources with grounding metadata
+      const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks;
+      
+      if ((!result.sources || result.sources.length === 0) && groundingChunks) {
+        const extractedSources = groundingChunks
+          .filter((chunk: any) => chunk.web)
+          .map((chunk: any) => ({
+            nom: chunk.web.title || "Source Web",
+            lien: chunk.web.uri
+          }))
+          // Filter out duplicates based on URI
+          .filter((v: any, i: number, a: any) => a.findIndex((t: any) => (t.lien === v.lien)) === i)
+          .slice(0, 4); // Limit to top 4
+
+          if (extractedSources.length > 0) {
+              result.sources = extractedSources;
+          }
+      }
+
+      return result;
+
+    } catch (error: any) {
+      console.error(`Gemini API Error (Attempt ${attempt + 1}/${maxRetries}):`, error);
+
+      // Vérifie si c'est une erreur de surcharge (429) ou temporaire (503)
+      const isOverloaded = error.message?.includes('429') || error.message?.includes('503') || error.status === 429 || error.status === 503;
+
+      if (isOverloaded && attempt < maxRetries - 1) {
+        // Attendre un peu plus longtemps à chaque échec (2s, 4s...)
+        const waitTime = 2000 * (attempt + 1);
+        console.log(`API surchargée, nouvelle tentative dans ${waitTime}ms...`);
+        await delay(waitTime);
+        attempt++;
+      } else {
+        // Si ce n'est pas une erreur de surcharge ou si on a épuisé les essais
+        throw new Error("Le service est momentanément saturé par trop de demandes. Veuillez réessayer dans quelques secondes.");
+      }
     }
-
-    const result: FactCheckResult = JSON.parse(jsonMatch[0]);
-
-    // Enhance sources with grounding metadata if the model didn't fill them explicitly but used grounding
-    const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks;
-    
-    if ((!result.sources || result.sources.length === 0) && groundingChunks) {
-      const extractedSources = groundingChunks
-        .filter((chunk: any) => chunk.web)
-        .map((chunk: any) => ({
-          nom: chunk.web.title || "Source Web",
-          lien: chunk.web.uri
-        }))
-        // Filter out duplicates based on URI
-        .filter((v: any, i: number, a: any) => a.findIndex((t: any) => (t.lien === v.lien)) === i)
-        .slice(0, 4); // Limit to top 4
-
-        if (extractedSources.length > 0) {
-            result.sources = extractedSources;
-        }
-    }
-
-    return result;
-
-  } catch (error) {
-    console.error("Gemini API Error:", error);
-    throw new Error("Impossible de vérifier l'information pour le moment.");
   }
+
+  throw new Error("Impossible de vérifier l'information pour le moment.");
 };
